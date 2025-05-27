@@ -9,8 +9,8 @@ from pathlib import Path
 dotenv_path = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path)
 
-def get_db():
+def get_db(name):
     mongo_uri = os.getenv("MONGO_URI")
     client = MongoClient(mongo_uri)
-    db = client["youtube_sentiment"]  # Ganti sesuai kebutuhan
+    db = client[name] 
     return db

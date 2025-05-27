@@ -1,19 +1,20 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from datetime import datetime
 from connection import get_db
 import googleapiclient.discovery
+from pymongo.errors import DuplicateKeyError
+import uuid
 
 # Load .env
 dotenv_path = Path(__file__).resolve().parents[0] / ".env"
 load_dotenv(dotenv_path)
 
-# Setup API
+# Setup YouTube API
 api_key = os.getenv("YOUTUBE_API_KEY")
 youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=api_key)
 
-# List Video IDs (8 video)
+# Daftar ID Video
 VIDEO_IDS = [
     "fK85SQzm0Z0",
     "K8d4n9GhBrg",
@@ -25,15 +26,16 @@ VIDEO_IDS = [
     "7cAzQjnEqXs"
 ]
 
-# Fungsi ambil komentar (hingga 3000 per video)
-def fetch_comments(video_id, db, max_comments=3000):
-    collection = db[f"video_{video_id}"]
+def fetch_comments(video_id, collection_name, db, max_comments=15000):
+    collection = db[collection_name]
+    collection.create_index("id", unique=True)  # Indeks untuk cek duplikasi
+
     next_page_token = None
     total_fetched = 0
 
     while total_fetched < max_comments:
         request = youtube.commentThreads().list(
-            part="snippet",
+            part="snippet,replies",  # Ambil snippet dan replies
             videoId=video_id,
             maxResults=100,
             pageToken=next_page_token,
@@ -41,39 +43,61 @@ def fetch_comments(video_id, db, max_comments=3000):
         )
         response = request.execute()
 
-        comments = []
         for item in response.get("items", []):
-            snippet = item["snippet"]
-            top_comment = snippet["topLevelComment"]["snippet"]
+            # Siapkan dokumen top-level comment
+            comment_thread = item
+            top_comment_id = item["snippet"]["topLevelComment"]["id"]
+            
+            # Inisialisasi field replies jika ada sub-komentar
+            total_reply = item["snippet"].get("totalReplyCount", 0)
+            if total_reply > 0:
+                reply_token = None
+                all_replies = []
+                
+                # Ambil semua sub-komentar
+                while True:
+                    reply_request = youtube.comments().list(
+                        part="snippet",
+                        parentId=top_comment_id,
+                        maxResults=100,
+                        pageToken=reply_token,
+                        textFormat="plainText"
+                    )
+                    reply_response = reply_request.execute()
 
-            comment_data = {
-                "video_id": video_id,
-                "comment_id": item["id"],
-                "text": top_comment.get("textOriginal", ""),
-                "author": top_comment.get("authorDisplayName", ""),
-                "like_count": top_comment.get("likeCount", 0),
-                "published_at": top_comment.get("publishedAt", ""),
-                "retrieved_at": datetime.utcnow().isoformat(),
-            }
+                    for reply in reply_response.get("items", []):
+                        all_replies.append(reply)
 
-            comments.append(comment_data)
+                    reply_token = reply_response.get("nextPageToken")
+                    if not reply_token:
+                        break
 
-        if comments:
-            collection.insert_many(comments)
-            total_fetched += len(comments)
-            print(f"✅ Fetched {total_fetched} comments for video {video_id}")
+                # Tambahkan semua sub-komentar ke field replies
+                comment_thread["replies"] = {"comments": all_replies}
+            else:
+                # Jika tidak ada sub-komentar, hapus field replies atau biarkan kosong
+                comment_thread.pop("replies", None)
+
+            # Simpan dokumen lengkap ke MongoDB
+            try:
+                collection.insert_one(comment_thread)
+                total_fetched += 1
+            except DuplicateKeyError:
+                pass
 
         next_page_token = response.get("nextPageToken")
         if not next_page_token:
             break
 
-    print(f"🎉 Selesai ambil {total_fetched} komentar untuk video {video_id}")
+        print(f"✅ Fetched {total_fetched} raw comment threads so far for {collection_name}")
 
-# Main execution
+    print(f"🎉 DONE: {total_fetched} total raw comment threads for {collection_name}")
+
+# Main Eksekusi
 if __name__ == "__main__":
-    db = get_db()
-    for vid in VIDEO_IDS:
-        print(f"🚀 Mengambil komentar dari video {vid}...")
-        fetch_comments(vid, db)
-    print("✅ Semua video selesai diproses.")
-
+    db = get_db("db_data_kotor")
+    for idx, vid in enumerate(VIDEO_IDS, start=1):
+        collection_name = f"video_{idx}"
+        print(f"\n🚀 Mulai mengambil komentar dari video urutan ke-{idx}...")
+        fetch_comments(vid, collection_name, db)
+    print("\n✅ Semua video selesai diproses.")
