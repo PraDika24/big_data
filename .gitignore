@@ -2,3 +2,8 @@
 .env
 collect_data/__pycache__/
 cleaning_data/__pycache__/
+cleaning_data/cleaned_english_comments
+cleaning_data/cleaned_no_spam_comments
+cleaning_data/english_only_comments
+cleaning_data/filter_bahasa_inggris
+cleaning_data/normalized_comments
